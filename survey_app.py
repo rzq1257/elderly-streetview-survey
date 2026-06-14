@@ -10,19 +10,18 @@ from supabase import create_client
 
 
 # =====================================================
-# 页面设置
+# 页面基础设置
 # =====================================================
 
 st.set_page_config(
     page_title="老年生活圈服务需求与街景感知调研",
     page_icon="🌳",
-    layout="centered",
-    initial_sidebar_state="collapsed"
+    layout="wide"
 )
 
 
 # =====================================================
-# 基础常量
+# 路径与常量
 # =====================================================
 
 BASE_DIR = Path(__file__).parent
@@ -30,9 +29,6 @@ SCENES_CSV = BASE_DIR / "scenes_1000_cloud.csv"
 
 FORMAL_MODE = "正式调研"
 TEST_MODE = "测试 / 预览"
-
-NEED_OPTIONS = ["非常需要", "比较需要", "一般", "不太需要", "不需要"]
-REDUCE_OPTIONS = ["明显会", "有些会", "一般", "不太会", "不会"]
 
 CHOICE_LABELS = {
     "A": "左边更适合",
@@ -51,7 +47,70 @@ REASON_OPTIONS = [
 
 
 # =====================================================
-# 工具函数
+# Supabase 连接
+# =====================================================
+
+@st.cache_resource
+def get_supabase_client():
+    url = st.secrets.get("SUPABASE_URL", "")
+    key = st.secrets.get("SUPABASE_KEY", "")
+
+    if not url or not key:
+        return None
+
+    return create_client(url, key)
+
+
+def require_supabase_if_formal(mode):
+    if mode == FORMAL_MODE:
+        supabase = get_supabase_client()
+        if supabase is None:
+            st.error(
+                "正式调研模式需要配置 Supabase Secrets：SUPABASE_URL 和 SUPABASE_KEY。"
+            )
+            st.stop()
+        return supabase
+    return None
+
+
+# =====================================================
+# 数据读取
+# =====================================================
+
+@st.cache_data
+def load_scenes():
+    if not SCENES_CSV.exists():
+        st.error(f"找不到场景文件：{SCENES_CSV}")
+        st.stop()
+
+    df = pd.read_csv(SCENES_CSV, encoding="utf-8-sig")
+
+    if "image_url" not in df.columns:
+        st.error("scenes_1000_cloud.csv 必须包含 image_url 字段。")
+        st.stop()
+
+    if "scene_id" not in df.columns:
+        df["scene_id"] = [f"S{i+1:04d}" for i in range(len(df))]
+
+    if "filename" not in df.columns:
+        df["filename"] = ""
+
+    if "OID" not in df.columns:
+        df["OID"] = ""
+
+    df["scene_id"] = df["scene_id"].astype(str)
+    df["image_url"] = df["image_url"].astype(str)
+    df["filename"] = df["filename"].astype(str)
+    df["OID"] = df["OID"].astype(str)
+
+    return df
+
+
+SCENES = load_scenes()
+
+
+# =====================================================
+# 通用工具函数
 # =====================================================
 
 def now_text():
@@ -77,102 +136,12 @@ def pair_key(scene_a, scene_b):
     return f"{a}__{b}"
 
 
-def rerun():
-    st.rerun()
-
-
-def go_to(step):
-    st.session_state.step = step
-    rerun()
-
-
-def reset_all():
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
-    rerun()
-
-
-def init_state():
-    defaults = {
-        "step": "intro",
-        "respondent_id": make_respondent_id(),
-        "answers": {},
-        "pairs": [],
-        "current_trial": 0,
-        "trial_start_time": time.time(),
-        "pending_choice": None,
-        "pending_choice_label": None,
-        "survey_meta": {},
-        "basic_saved": False
-    }
-
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-
-
-init_state()
-
-
-# =====================================================
-# 延迟加载 scenes：只有进入街景时才读 CSV
-# =====================================================
-
-@st.cache_data(show_spinner=False)
-def load_scenes():
-    if not SCENES_CSV.exists():
-        st.error(f"找不到场景文件：{SCENES_CSV}")
-        st.stop()
-
-    df = pd.read_csv(SCENES_CSV, encoding="utf-8-sig")
-
-    if "image_url" not in df.columns:
-        st.error("scenes_1000_cloud.csv 必须包含 image_url 字段。")
-        st.stop()
-
-    if "scene_id" not in df.columns:
-        df["scene_id"] = [f"S{i + 1:04d}" for i in range(len(df))]
-
-    if "filename" not in df.columns:
-        df["filename"] = ""
-
-    if "OID" not in df.columns:
-        df["OID"] = ""
-
-    df["scene_id"] = df["scene_id"].astype(str)
-    df["image_url"] = df["image_url"].astype(str)
-    df["filename"] = df["filename"].astype(str)
-    df["OID"] = df["OID"].astype(str)
-
-    return df
-
-
-def get_scene_row(scene_id):
-    scenes = load_scenes()
-    matched = scenes[scenes["scene_id"].astype(str) == str(scene_id)]
-
-    if matched.empty:
-        return None
-
-    return matched.iloc[0]
-
-
-# =====================================================
-# Supabase：只有正式调研需要时才连接
-# =====================================================
-
-@st.cache_resource(show_spinner=False)
-def get_supabase_client():
+def safe_execute(func, err_msg="数据库操作失败"):
     try:
-        url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_KEY"]
-    except Exception:
-        st.error(
-            "正式调研模式需要配置 Supabase Secrets：SUPABASE_URL 和 SUPABASE_KEY。"
-        )
+        return func()
+    except Exception as e:
+        st.error(f"{err_msg}：{e}")
         st.stop()
-
-    return create_client(url, key)
 
 
 def fetch_all_rows(supabase, table_name, columns="*"):
@@ -209,6 +178,10 @@ def insert_rows(supabase, table_name, rows, chunk_size=500):
         supabase.table(table_name).insert(chunk).execute()
 
 
+# =====================================================
+# Supabase 写入函数
+# =====================================================
+
 def save_respondent_to_supabase(row):
     supabase = get_supabase_client()
     supabase.table("respondents").upsert(row).execute()
@@ -220,17 +193,10 @@ def save_choice_to_supabase(row):
 
 
 def get_scene_counts_from_supabase():
-    scenes = load_scenes()
-    scene_ids = scenes["scene_id"].astype(str).tolist()
-
-    counts = {sid: 0 for sid in scene_ids}
-
     supabase = get_supabase_client()
-    rows = fetch_all_rows(
-        supabase,
-        "scene_appear_count",
-        "scene_id,appear_count"
-    )
+    rows = fetch_all_rows(supabase, "scene_appear_count", "scene_id,appear_count")
+
+    counts = {sid: 0 for sid in SCENES["scene_id"].astype(str).tolist()}
 
     for r in rows:
         sid = str(r.get("scene_id", ""))
@@ -246,9 +212,6 @@ def get_existing_pair_keys_from_supabase():
 
 
 def commit_generated_pairs_to_supabase(respondent_id, pairs, updated_counts):
-    if not pairs:
-        return
-
     supabase = get_supabase_client()
     ts = now_text()
 
@@ -278,7 +241,6 @@ def commit_generated_pairs_to_supabase(respondent_id, pairs, updated_counts):
     insert_rows(supabase, "question_log", question_rows)
 
     used_scene_ids = set()
-
     for p in pairs:
         used_scene_ids.add(p["scene_a"])
         used_scene_ids.add(p["scene_b"])
@@ -299,14 +261,18 @@ def commit_generated_pairs_to_supabase(respondent_id, pairs, updated_counts):
 
 
 # =====================================================
-# 生成街景 pair
+# 抽题逻辑
 # =====================================================
 
-def generate_pairs(respondent_id, n_questions, reason_ratio, is_formal):
-    scenes = load_scenes()
-    all_scene_ids = scenes["scene_id"].astype(str).tolist()
+def generate_pairs(
+    respondent_id,
+    n_questions,
+    reason_ratio,
+    mode
+):
+    all_scene_ids = SCENES["scene_id"].astype(str).tolist()
 
-    if is_formal:
+    if mode == FORMAL_MODE:
         counts = get_scene_counts_from_supabase()
         existing_pairs = get_existing_pair_keys_from_supabase()
     else:
@@ -317,12 +283,9 @@ def generate_pairs(respondent_id, n_questions, reason_ratio, is_formal):
     generated = []
 
     reason_n = int(round(n_questions * reason_ratio))
-    if reason_n > 0:
-        reason_indices = set(random.sample(range(n_questions), reason_n))
-    else:
-        reason_indices = set()
+    reason_indices = set(random.sample(range(n_questions), reason_n)) if reason_n > 0 else set()
 
-    max_attempts = n_questions * 500
+    max_attempts = n_questions * 300
     attempts = 0
 
     while len(generated) < n_questions and attempts < max_attempts:
@@ -342,9 +305,10 @@ def generate_pairs(respondent_id, n_questions, reason_ratio, is_formal):
         if pk in local_pairs:
             continue
 
-        if is_formal and pk in existing_pairs:
+        if mode == FORMAL_MODE and pk in existing_pairs:
             continue
 
+        # 左右随机
         if random.random() < 0.5:
             scene_a, scene_b = a, b
         else:
@@ -352,142 +316,134 @@ def generate_pairs(respondent_id, n_questions, reason_ratio, is_formal):
 
         trial_index = len(generated) + 1
 
-        generated.append({
+        p = {
             "trial_index": trial_index,
             "pair_id": f"{respondent_id}_P{trial_index:03d}",
             "scene_a": scene_a,
             "scene_b": scene_b,
             "pair_key": pk,
             "ask_reason": 1 if (trial_index - 1) in reason_indices else 0
-        })
+        }
 
+        generated.append(p)
         local_pairs.add(pk)
         existing_pairs.add(pk)
 
         counts[scene_a] = int(counts.get(scene_a, 0)) + 1
         counts[scene_b] = int(counts.get(scene_b, 0)) + 1
 
-    if is_formal:
-        commit_generated_pairs_to_supabase(
-            respondent_id,
-            generated,
-            counts
+    if len(generated) < n_questions:
+        st.warning(
+            f"原计划生成 {n_questions} 道街景题，但只生成了 {len(generated)} 道。"
         )
+
+    if mode == FORMAL_MODE:
+        commit_generated_pairs_to_supabase(respondent_id, generated, counts)
 
     return generated
 
 
 # =====================================================
-# 页面通用头部
+# 页面状态初始化
 # =====================================================
 
-def page_header():
-    st.title("老年生活圈服务需求与街景感知可达性调研问卷")
+if "step" not in st.session_state:
+    st.session_state.step = "basic"
 
-    st.caption(
-        "本调研仅用于学术研究与社区服务优化，所有信息匿名处理。填写对象：60周岁及以上老年居民。"
-    )
+if "respondent_id" not in st.session_state:
+    st.session_state.respondent_id = make_respondent_id()
 
+if "pairs" not in st.session_state:
+    st.session_state.pairs = []
 
-def sidebar_settings():
-    st.sidebar.header("调研设置")
+if "current_trial" not in st.session_state:
+    st.session_state.current_trial = 0
 
-    mode = st.sidebar.radio(
-        "调研模式",
-        [TEST_MODE, FORMAL_MODE],
-        index=0
-    )
+if "trial_start_time" not in st.session_state:
+    st.session_state.trial_start_time = time.time()
 
-    interviewer_id = st.sidebar.text_input(
-        "调研员编号",
-        value=st.session_state.survey_meta.get("interviewer_id", "")
-    )
+if "pending_choice" not in st.session_state:
+    st.session_state.pending_choice = None
 
-    community = st.sidebar.text_input(
-        "社区名称",
-        value=st.session_state.survey_meta.get("community", "")
-    )
+if "pending_choice_label" not in st.session_state:
+    st.session_state.pending_choice_label = None
 
-    n_questions = st.sidebar.selectbox(
-        "街景比较题数量",
-        [40, 60, 80, 100],
-        index=[40, 60, 80, 100].index(
-            int(st.session_state.survey_meta.get("n_questions", 60))
-        ) if st.session_state.survey_meta.get("n_questions") else 1
-    )
-
-    reason_ratio_percent = st.sidebar.selectbox(
-        "原因追问比例",
-        [0, 10, 15, 20],
-        index=[0, 10, 15, 20].index(
-            int(st.session_state.survey_meta.get("reason_ratio_percent", 20))
-        ) if st.session_state.survey_meta.get("reason_ratio_percent") else 3
-    )
-
-    is_formal = mode == FORMAL_MODE
-
-    st.session_state.survey_meta.update({
-        "mode": mode,
-        "is_test": "正式" if is_formal else "测试",
-        "interviewer_id": interviewer_id,
-        "community": community,
-        "n_questions": n_questions,
-        "reason_ratio_percent": reason_ratio_percent,
-        "reason_ratio": reason_ratio_percent / 100,
-        "is_formal": is_formal
-    })
-
-    if is_formal:
-        st.sidebar.success("正式调研模式：提交后写入 Supabase")
-    else:
-        st.sidebar.warning("测试 / 预览模式：不写入正式数据库")
-
-    st.sidebar.caption(f"受访者ID：{st.session_state.respondent_id}")
+if "basic_saved" not in st.session_state:
+    st.session_state.basic_saved = False
 
 
 # =====================================================
-# 首页
+# 标题
 # =====================================================
 
-def intro_page():
-    page_header()
-    sidebar_settings()
+st.title("老年生活圈服务需求与街景感知可达性调研问卷")
 
-    st.markdown("### 调研流程")
-
-    st.markdown(
-        """
-1. 填写基本信息与生活状态  
-2. 填写设施需求情况  
-3. 填写山地步行与街道环境敏感性  
-4. 可选择只提交问卷，或继续进行街景比较  
+st.markdown(
+    """
+本调研仅用于学术研究与社区服务优化，所有信息匿名处理。  
+填写对象：**60周岁及以上老年居民**。
 """
-    )
-
-    meta = st.session_state.survey_meta
-
-    if meta["is_formal"]:
-        st.info("当前为正式调研模式。提交后数据会写入云端数据库。")
-    else:
-        st.info("当前为测试 / 预览模式。可以给他人查看问卷内容，不会写入正式数据库。")
-
-    if st.button("开始填写问卷", use_container_width=True):
-        go_to("b1")
+)
 
 
 # =====================================================
-# B1 页面
+# 侧边栏设置
 # =====================================================
 
-def b1_page():
-    page_header()
-    sidebar_settings()
+st.sidebar.header("调研设置")
 
-    a = st.session_state.answers
+mode = st.sidebar.radio(
+    "调研模式",
+    [TEST_MODE, FORMAL_MODE],
+    index=0,
+    help="测试 / 预览模式不会写入 Supabase 数据库。正式调研模式会保存数据。"
+)
 
+is_test_value = "测试" if mode == TEST_MODE else "正式"
+
+interviewer_id = st.sidebar.text_input(
+    "调研员编号",
+    value="",
+    placeholder="例如 A01"
+)
+
+community = st.sidebar.text_input(
+    "社区名称",
+    value="",
+    placeholder="例如 XX社区"
+)
+
+n_questions = st.sidebar.selectbox(
+    "街景比较题数量",
+    [40, 60, 80, 100],
+    index=1
+)
+
+reason_ratio_percent = st.sidebar.selectbox(
+    "原因追问比例",
+    [0, 10, 15, 20],
+    index=3
+)
+
+reason_ratio = reason_ratio_percent / 100
+
+st.sidebar.caption(f"当前受访者ID：{st.session_state.respondent_id}")
+
+if mode == TEST_MODE:
+    st.sidebar.warning("当前为测试 / 预览模式，不会保存到正式数据库。")
+else:
+    st.sidebar.success("当前为正式调研模式，数据会写入 Supabase。")
+
+
+# =====================================================
+# 问卷表单
+# =====================================================
+
+def basic_form_page():
     st.subheader("B1. 基本信息与生活状态")
 
-    with st.form("b1_form"):
+    with st.form("basic_questionnaire_form"):
+
         q1_age = st.radio(
             "**1. 年龄**",
             ["60—69岁", "70—79岁", "80岁及以上"],
@@ -534,81 +490,39 @@ def b1_page():
         if q7_assistive_tool == "其他":
             q7_assistive_tool_other = st.text_input("请填写其他辅助工具")
 
-        submitted = st.form_submit_button("下一页：设施需求情况", use_container_width=True)
+        st.subheader("B2. 设施需求情况")
 
-    if submitted:
-        required = {
-            "1. 年龄": q1_age,
-            "2. 性别": q2_gender,
-            "3. 健康状况": q3_health,
-            "4. 居住情况": q4_living,
-            "5. 照护需求": q5_care,
-            "6. 独立外出": q6_independent_outing,
-            "7. 辅助工具": q7_assistive_tool,
-        }
+        need_options = ["非常需要", "比较需要", "一般", "不太需要", "不需要"]
 
-        missing = [k for k, v in required.items() if v is None or v == ""]
-
-        if missing:
-            st.error("以下题目未填写：" + "，".join(missing))
-            return
-
-        a.update({
-            "q1_age": q1_age,
-            "q2_gender": q2_gender,
-            "q3_health": q3_health,
-            "q4_living": q4_living,
-            "q5_care": q5_care,
-            "q6_independent_outing": q6_independent_outing,
-            "q7_assistive_tool": q7_assistive_tool,
-            "q7_assistive_tool_other": q7_assistive_tool_other,
-        })
-
-        go_to("b2")
-
-
-# =====================================================
-# B2 页面
-# =====================================================
-
-def b2_page():
-    page_header()
-    sidebar_settings()
-
-    a = st.session_state.answers
-
-    st.subheader("B2. 设施需求情况")
-
-    with st.form("b2_form"):
         q8_medical_need = st.radio(
             "**8. 平时常去社区卫生站或者附近医院看病吗？**",
-            NEED_OPTIONS,
+            need_options,
             index=None
         )
 
         st.markdown("**9. 是否需要养老或照护服务？**")
 
-        q9_day_care = st.radio("日间照料", NEED_OPTIONS, index=None, horizontal=True)
-        q9_bathing = st.radio("助浴", NEED_OPTIONS, index=None, horizontal=True)
-        q9_cleaning = st.radio("助洁", NEED_OPTIONS, index=None, horizontal=True)
-        q9_rehab_nursing = st.radio("康复护理", NEED_OPTIONS, index=None, horizontal=True)
-        q9_medical_accompany = st.radio("助医/陪诊", NEED_OPTIONS, index=None, horizontal=True)
+        q9_day_care = st.radio("日间照料", need_options, index=None, horizontal=True)
+        q9_bathing = st.radio("助浴", need_options, index=None, horizontal=True)
+        q9_cleaning = st.radio("助洁", need_options, index=None, horizontal=True)
+        q9_rehab_nursing = st.radio("康复护理", need_options, index=None, horizontal=True)
+        q9_medical_accompany = st.radio("助医/陪诊", need_options, index=None, horizontal=True)
 
         q10_meal_service = st.radio(
             "**10. 是否需要社区食堂或助餐服务？**",
-            NEED_OPTIONS,
+            need_options,
             index=None
         )
 
         q11_recreation_facility = st.radio(
             "**11. 是否使用社区文娱或休闲活动设施？**",
-            NEED_OPTIONS,
+            need_options,
             index=None
         )
 
         q12_public_transit = st.radio(
             "**12. 平时经常坐公交或轨道交通吗？**",
-            NEED_OPTIONS,
+            need_options,
             index=None
         )
 
@@ -621,68 +535,8 @@ def b2_page():
         if "其他" in q13_lacking_facilities:
             q13_lacking_facilities_other = st.text_input("请填写其他缺口设施")
 
-        c1, c2 = st.columns(2)
-        with c1:
-            back = st.form_submit_button("返回上一页", use_container_width=True)
-        with c2:
-            submitted = st.form_submit_button("下一页：山地步行情况", use_container_width=True)
+        st.subheader("C. 山地步行与街道环境敏感性")
 
-    if back:
-        go_to("b1")
-
-    if submitted:
-        required = {
-            "8. 医疗需求": q8_medical_need,
-            "9. 日间照料": q9_day_care,
-            "9. 助浴": q9_bathing,
-            "9. 助洁": q9_cleaning,
-            "9. 康复护理": q9_rehab_nursing,
-            "9. 助医/陪诊": q9_medical_accompany,
-            "10. 助餐服务": q10_meal_service,
-            "11. 文娱休闲": q11_recreation_facility,
-            "12. 公共交通": q12_public_transit,
-        }
-
-        missing = [k for k, v in required.items() if v is None or v == ""]
-
-        if len(q13_lacking_facilities) > 3:
-            st.error("第13题最多选择3项。")
-            return
-
-        if missing:
-            st.error("以下题目未填写：" + "，".join(missing))
-            return
-
-        a.update({
-            "q8_medical_need": q8_medical_need,
-            "q9_day_care": q9_day_care,
-            "q9_bathing": q9_bathing,
-            "q9_cleaning": q9_cleaning,
-            "q9_rehab_nursing": q9_rehab_nursing,
-            "q9_medical_accompany": q9_medical_accompany,
-            "q10_meal_service": q10_meal_service,
-            "q11_recreation_facility": q11_recreation_facility,
-            "q12_public_transit": q12_public_transit,
-            "q13_lacking_facilities": join_values(q13_lacking_facilities),
-            "q13_lacking_facilities_other": q13_lacking_facilities_other,
-        })
-
-        go_to("c")
-
-
-# =====================================================
-# C 页面
-# =====================================================
-
-def c_page():
-    page_header()
-    sidebar_settings()
-
-    a = st.session_state.answers
-
-    st.subheader("C. 山地步行与街道环境敏感性")
-
-    with st.form("c_form"):
         q14_park_green_freq = st.radio(
             "**14. 去公园/广场/公共绿地频率**",
             ["几乎每天", "每周3—5次", "每周1—2次", "偶尔去", "基本不去"],
@@ -729,35 +583,52 @@ def c_page():
             index=None
         )
 
+        reduce_options = ["明显会", "有些会", "一般", "不太会", "不会"]
+
         st.markdown("**19. 以下场景是否会减少外出步行意愿？**")
 
-        q19_slope_reduce = st.radio("连续上坡/坡度较大", REDUCE_OPTIONS, index=None, horizontal=True)
-        q19_steps_reduce = st.radio("上下台阶多", REDUCE_OPTIONS, index=None, horizontal=True)
-        q19_sidewalk_reduce = st.radio("人行道不连续、较窄", REDUCE_OPTIONS, index=None, horizontal=True)
-        q19_traffic_reduce = st.radio("车流较多", REDUCE_OPTIONS, index=None, horizontal=True)
+        q19_slope_reduce = st.radio("连续上坡/坡度较大", reduce_options, index=None, horizontal=True)
+        q19_steps_reduce = st.radio("上下台阶多", reduce_options, index=None, horizontal=True)
+        q19_sidewalk_reduce = st.radio("人行道不连续、较窄", reduce_options, index=None, horizontal=True)
+        q19_traffic_reduce = st.radio("车流较多", reduce_options, index=None, horizontal=True)
+
+        increase_options = ["明显会", "有些会", "一般", "不太会", "不会"]
 
         st.markdown("**20. 以下场景是否会增加外出步行意愿？**")
 
-        q20_seat_increase = st.radio("步行道路有休憩座椅", REDUCE_OPTIONS, index=None, horizontal=True)
-        q20_shade_increase = st.radio("步行道路有树荫或遮阴", REDUCE_OPTIONS, index=None, horizontal=True)
-        q20_handrail_increase = st.radio("台阶或坡道旁有扶手", REDUCE_OPTIONS, index=None, horizontal=True)
-        q20_lively_shop_increase = st.radio("路上比较热闹、有商店或服务点", REDUCE_OPTIONS, index=None, horizontal=True)
+        q20_seat_increase = st.radio("步行道路有休憩座椅", increase_options, index=None, horizontal=True)
+        q20_shade_increase = st.radio("步行道路有树荫或遮阴", increase_options, index=None, horizontal=True)
+        q20_handrail_increase = st.radio("台阶或坡道旁有扶手", increase_options, index=None, horizontal=True)
+        q20_lively_shop_increase = st.radio("路上比较热闹、有商店或服务点", increase_options, index=None, horizontal=True)
 
         q21_open_environment = st.text_area(
             "**21. 什么样的街道环境会想让您外出，或什么样的街道环境会让您不想外出？可选填。**"
         )
 
-        c1, c2 = st.columns(2)
-        with c1:
-            back = st.form_submit_button("返回上一页", use_container_width=True)
-        with c2:
-            submitted = st.form_submit_button("下一页：提交选择", use_container_width=True)
+        st.markdown("---")
+        st.markdown("### 填完问卷后请选择")
 
-    if back:
-        go_to("b2")
+        submit_end = st.form_submit_button("提交问卷并结束", use_container_width=True)
+        submit_continue = st.form_submit_button("提交问卷并继续街景比较", use_container_width=True)
 
-    if submitted:
-        required = {
+    if submit_end or submit_continue:
+        required_items = {
+            "1. 年龄": q1_age,
+            "2. 性别": q2_gender,
+            "3. 健康状况": q3_health,
+            "4. 居住情况": q4_living,
+            "5. 照护需求": q5_care,
+            "6. 独立外出": q6_independent_outing,
+            "7. 辅助工具": q7_assistive_tool,
+            "8. 医疗需求": q8_medical_need,
+            "9. 日间照料": q9_day_care,
+            "9. 助浴": q9_bathing,
+            "9. 助洁": q9_cleaning,
+            "9. 康复护理": q9_rehab_nursing,
+            "9. 助医/陪诊": q9_medical_accompany,
+            "10. 助餐服务": q10_meal_service,
+            "11. 文娱休闲": q11_recreation_facility,
+            "12. 公共交通": q12_public_transit,
             "14. 公园绿地频率": q14_park_green_freq,
             "15. 可接受步行时间": q15_acceptable_walk_time,
             "17. 坡道台阶体感": q17_slope_step_feeling,
@@ -772,13 +643,48 @@ def c_page():
             "20. 热闹商店": q20_lively_shop_increase,
         }
 
-        missing = [k for k, v in required.items() if v is None or v == ""]
+        missing = [k for k, v in required_items.items() if v is None or v == ""]
 
-        if missing:
-            st.error("以下题目未填写：" + "，".join(missing))
+        if len(q13_lacking_facilities) > 3:
+            st.error("第13题最多选择3项。")
             return
 
-        a.update({
+        if missing:
+            st.error("以下必答题还没有填写：")
+            for m in missing:
+                st.write(f"- {m}")
+            return
+
+        respondent_row = {
+            "respondent_id": st.session_state.respondent_id,
+            "is_test": is_test_value,
+            "interviewer_id": interviewer_id,
+            "community": community,
+            "random_seed": str(random.random()),
+            "n_questions": str(n_questions),
+            "reason_ratio": str(reason_ratio_percent),
+
+            "q1_age": q1_age,
+            "q2_gender": q2_gender,
+            "q3_health": q3_health,
+            "q4_living": q4_living,
+            "q5_care": q5_care,
+            "q6_independent_outing": q6_independent_outing,
+            "q7_assistive_tool": q7_assistive_tool,
+            "q7_assistive_tool_other": q7_assistive_tool_other,
+
+            "q8_medical_need": q8_medical_need,
+            "q9_day_care": q9_day_care,
+            "q9_bathing": q9_bathing,
+            "q9_cleaning": q9_cleaning,
+            "q9_rehab_nursing": q9_rehab_nursing,
+            "q9_medical_accompany": q9_medical_accompany,
+            "q10_meal_service": q10_meal_service,
+            "q11_recreation_facility": q11_recreation_facility,
+            "q12_public_transit": q12_public_transit,
+            "q13_lacking_facilities": join_values(q13_lacking_facilities),
+            "q13_lacking_facilities_other": q13_lacking_facilities_other,
+
             "q14_park_green_freq": q14_park_green_freq,
             "q15_acceptable_walk_time": q15_acceptable_walk_time,
             "q15_acceptable_walk_time_other": q15_acceptable_walk_time_other,
@@ -786,141 +692,79 @@ def c_page():
             "q16_alternative_activity_places_other": q16_alternative_activity_places_other,
             "q17_slope_step_feeling": q17_slope_step_feeling,
             "q18_rest_interval": q18_rest_interval,
+
             "q19_slope_reduce": q19_slope_reduce,
             "q19_steps_reduce": q19_steps_reduce,
             "q19_sidewalk_reduce": q19_sidewalk_reduce,
             "q19_traffic_reduce": q19_traffic_reduce,
+
             "q20_seat_increase": q20_seat_increase,
             "q20_shade_increase": q20_shade_increase,
             "q20_handrail_increase": q20_handrail_increase,
             "q20_lively_shop_increase": q20_lively_shop_increase,
+
             "q21_open_environment": q21_open_environment,
-        })
+            "submit_basic_time": now_text()
+        }
 
-        go_to("submit_choice")
+        if mode == FORMAL_MODE:
+            require_supabase_if_formal(mode)
+            safe_execute(
+                lambda: save_respondent_to_supabase(respondent_row),
+                "保存问卷基本信息失败"
+            )
+            st.session_state.basic_saved = True
+        else:
+            st.session_state.basic_saved = True
 
+        if submit_end:
+            st.session_state.step = "finished_basic_only"
+            st.rerun()
 
-# =====================================================
-# 保存问卷
-# =====================================================
-
-def build_respondent_row():
-    a = st.session_state.answers
-    meta = st.session_state.survey_meta
-
-    row = {
-        "respondent_id": st.session_state.respondent_id,
-        "is_test": meta.get("is_test", "测试"),
-        "interviewer_id": meta.get("interviewer_id", ""),
-        "community": meta.get("community", ""),
-        "random_seed": str(random.random()),
-        "n_questions": str(meta.get("n_questions", "")),
-        "reason_ratio": str(meta.get("reason_ratio_percent", "")),
-        "submit_basic_time": now_text()
-    }
-
-    row.update(a)
-
-    return row
-
-
-def save_basic_if_needed():
-    if st.session_state.basic_saved:
-        return
-
-    meta = st.session_state.survey_meta
-
-    if meta.get("is_formal", False):
-        row = build_respondent_row()
-        save_respondent_to_supabase(row)
-
-    st.session_state.basic_saved = True
-
-
-# =====================================================
-# 提交选择页面
-# =====================================================
-
-def submit_choice_page():
-    page_header()
-    sidebar_settings()
-
-    meta = st.session_state.survey_meta
-
-    st.subheader("提交方式")
-
-    if meta.get("is_formal", False):
-        st.info("当前为正式调研模式。点击提交后会写入 Supabase 云数据库。")
-    else:
-        st.info("当前为测试 / 预览模式。不会写入正式数据库。")
-
-    st.markdown("您可以只提交问卷，也可以继续完成街景比较。")
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-        if st.button("只提交问卷并结束", use_container_width=True):
-            try:
-                save_basic_if_needed()
-            except Exception as e:
-                st.error(f"保存问卷失败：{e}")
-                return
-
-            go_to("finished_basic_only")
-
-    with c2:
-        if st.button("提交问卷并继续街景比较", use_container_width=True):
-            try:
-                save_basic_if_needed()
-            except Exception as e:
-                st.error(f"保存问卷失败：{e}")
-                return
-
+        if submit_continue:
             with st.spinner("正在生成街景比较题，请稍候..."):
-                try:
-                    pairs = generate_pairs(
-                        respondent_id=st.session_state.respondent_id,
-                        n_questions=int(meta.get("n_questions", 60)),
-                        reason_ratio=float(meta.get("reason_ratio", 0.2)),
-                        is_formal=bool(meta.get("is_formal", False))
-                    )
-                except Exception as e:
-                    st.error(f"生成街景题失败：{e}")
-                    return
+                require_supabase_if_formal(mode)
+                pairs = generate_pairs(
+                    respondent_id=st.session_state.respondent_id,
+                    n_questions=n_questions,
+                    reason_ratio=reason_ratio,
+                    mode=mode
+                )
 
             st.session_state.pairs = pairs
             st.session_state.current_trial = 0
             st.session_state.trial_start_time = time.time()
             st.session_state.pending_choice = None
             st.session_state.pending_choice_label = None
-
-            go_to("streetview")
-
-    st.markdown("---")
-
-    if st.button("返回上一页"):
-        go_to("c")
+            st.session_state.step = "streetview"
+            st.rerun()
 
 
 # =====================================================
 # 街景比较页面
 # =====================================================
 
+def get_scene_row(scene_id):
+    df = SCENES[SCENES["scene_id"].astype(str) == str(scene_id)]
+    if df.empty:
+        return None
+    return df.iloc[0]
+
+
 def save_current_choice(choice, choice_label, reasons=None):
     idx = st.session_state.current_trial
     pair = st.session_state.pairs[idx]
-    meta = st.session_state.survey_meta
 
     response_time = time.time() - st.session_state.trial_start_time
 
     row = {
         "respondent_id": st.session_state.respondent_id,
-        "is_test": meta.get("is_test", "测试"),
-        "interviewer_id": meta.get("interviewer_id", ""),
-        "community": meta.get("community", ""),
+        "is_test": is_test_value,
+        "interviewer_id": interviewer_id,
+        "community": community,
         "random_seed": "",
         "n_questions": str(len(st.session_state.pairs)),
-        "reason_ratio": str(meta.get("reason_ratio_percent", "")),
+        "reason_ratio": str(reason_ratio_percent),
 
         "trial_index": int(pair["trial_index"]),
         "pair_id": pair["pair_id"],
@@ -936,8 +780,11 @@ def save_current_choice(choice, choice_label, reasons=None):
         "timestamp": now_text()
     }
 
-    if meta.get("is_formal", False):
-        save_choice_to_supabase(row)
+    if mode == FORMAL_MODE:
+        safe_execute(
+            lambda: save_choice_to_supabase(row),
+            "保存街景比较结果失败"
+        )
 
     st.session_state.current_trial += 1
     st.session_state.pending_choice = None
@@ -945,15 +792,12 @@ def save_current_choice(choice, choice_label, reasons=None):
     st.session_state.trial_start_time = time.time()
 
     if st.session_state.current_trial >= len(st.session_state.pairs):
-        go_to("finished_all")
-    else:
-        rerun()
+        st.session_state.step = "finished_all"
+
+    st.rerun()
 
 
 def streetview_page():
-    page_header()
-    sidebar_settings()
-
     st.subheader("街景成对比较")
 
     total = len(st.session_state.pairs)
@@ -962,15 +806,18 @@ def streetview_page():
     if total == 0:
         st.warning("没有生成街景题。")
         if st.button("结束"):
-            go_to("finished_basic_only")
+            st.session_state.step = "finished_basic_only"
+            st.rerun()
         return
 
     if idx >= total:
-        go_to("finished_all")
+        st.session_state.step = "finished_all"
+        st.rerun()
 
     pair = st.session_state.pairs[idx]
 
-    st.progress((idx + 1) / total)
+    progress = (idx + 1) / total
+    st.progress(progress)
     st.markdown(f"### 第 {idx + 1} / {total} 题")
 
     st.markdown(
@@ -987,41 +834,37 @@ def streetview_page():
     col1, col2 = st.columns(2)
 
     with col1:
-        st.markdown("#### 左边")
+        st.markdown("#### 左边场景")
         st.image(scene_a["image_url"], use_container_width=True)
 
     with col2:
-        st.markdown("#### 右边")
+        st.markdown("#### 右边场景")
         st.image(scene_b["image_url"], use_container_width=True)
 
     st.markdown("---")
 
     if pair["ask_reason"] == 1 and st.session_state.pending_choice is not None:
         st.info(f"您刚才选择了：{st.session_state.pending_choice_label}")
-
         reasons = st.multiselect(
             "请问主要原因是什么？可多选",
             REASON_OPTIONS
         )
 
-        c1, c2 = st.columns(2)
+        col_confirm, col_back = st.columns([1, 1])
 
-        with c1:
+        with col_confirm:
             if st.button("确认并进入下一题", use_container_width=True):
-                try:
-                    save_current_choice(
-                        st.session_state.pending_choice,
-                        st.session_state.pending_choice_label,
-                        reasons
-                    )
-                except Exception as e:
-                    st.error(f"保存街景结果失败：{e}")
+                save_current_choice(
+                    st.session_state.pending_choice,
+                    st.session_state.pending_choice_label,
+                    reasons
+                )
 
-        with c2:
+        with col_back:
             if st.button("返回重新选择", use_container_width=True):
                 st.session_state.pending_choice = None
                 st.session_state.pending_choice_label = None
-                rerun()
+                st.rerun()
 
     else:
         c1, c2, c3 = st.columns(3)
@@ -1031,41 +874,33 @@ def streetview_page():
                 if pair["ask_reason"] == 1:
                     st.session_state.pending_choice = "A"
                     st.session_state.pending_choice_label = CHOICE_LABELS["A"]
-                    rerun()
+                    st.rerun()
                 else:
-                    try:
-                        save_current_choice("A", CHOICE_LABELS["A"])
-                    except Exception as e:
-                        st.error(f"保存街景结果失败：{e}")
+                    save_current_choice("A", CHOICE_LABELS["A"])
 
         with c2:
             if st.button("右边更适合", use_container_width=True):
                 if pair["ask_reason"] == 1:
                     st.session_state.pending_choice = "B"
                     st.session_state.pending_choice_label = CHOICE_LABELS["B"]
-                    rerun()
+                    st.rerun()
                 else:
-                    try:
-                        save_current_choice("B", CHOICE_LABELS["B"])
-                    except Exception as e:
-                        st.error(f"保存街景结果失败：{e}")
+                    save_current_choice("B", CHOICE_LABELS["B"])
 
         with c3:
             if st.button("差不多 / 看不出来", use_container_width=True):
                 if pair["ask_reason"] == 1:
                     st.session_state.pending_choice = "Tie"
                     st.session_state.pending_choice_label = CHOICE_LABELS["Tie"]
-                    rerun()
+                    st.rerun()
                 else:
-                    try:
-                        save_current_choice("Tie", CHOICE_LABELS["Tie"])
-                    except Exception as e:
-                        st.error(f"保存街景结果失败：{e}")
+                    save_current_choice("Tie", CHOICE_LABELS["Tie"])
 
     st.markdown("---")
 
     if st.button("结束街景比较", type="secondary"):
-        go_to("finished_early")
+        st.session_state.step = "finished_early"
+        st.rerun()
 
 
 # =====================================================
@@ -1073,57 +908,36 @@ def streetview_page():
 # =====================================================
 
 def finished_page(message):
-    page_header()
-    sidebar_settings()
-
     st.success(message)
 
-    meta = st.session_state.survey_meta
-
-    if meta.get("is_formal", False):
-        st.info("正式调研模式：已保存到 Supabase 云数据库。")
+    if mode == TEST_MODE:
+        st.info("当前为测试 / 预览模式，本次填写内容没有写入正式数据库。")
     else:
-        st.info("测试 / 预览模式：本次内容未写入正式数据库。")
+        st.info("数据已保存到 Supabase 云数据库。")
 
     st.markdown("感谢您的参与！")
 
-    if st.button("开始下一份问卷", use_container_width=True):
-        reset_all()
+    if st.button("开始下一份问卷"):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
 
 
 # =====================================================
 # 主流程
 # =====================================================
 
-step = st.session_state.step
+if st.session_state.step == "basic":
+    basic_form_page()
 
-if step == "intro":
-    intro_page()
-
-elif step == "b1":
-    b1_page()
-
-elif step == "b2":
-    b2_page()
-
-elif step == "c":
-    c_page()
-
-elif step == "submit_choice":
-    submit_choice_page()
-
-elif step == "streetview":
+elif st.session_state.step == "streetview":
     streetview_page()
 
-elif step == "finished_basic_only":
+elif st.session_state.step == "finished_basic_only":
     finished_page("问卷已提交。")
 
-elif step == "finished_all":
+elif st.session_state.step == "finished_all":
     finished_page("问卷与街景比较均已完成。")
 
-elif step == "finished_early":
+elif st.session_state.step == "finished_early":
     finished_page("已提前结束街景比较，已完成的部分已保存。")
-
-else:
-    st.session_state.step = "intro"
-    rerun()
