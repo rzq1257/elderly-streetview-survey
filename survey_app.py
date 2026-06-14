@@ -415,8 +415,8 @@ community = st.sidebar.text_input(
 
 n_questions = st.sidebar.selectbox(
     "街景比较题数量",
-    [40, 60, 80, 100],
-    index=1
+    [10, 20, 30, 40, 50, 60, 80, 100],
+    index=5
 )
 
 reason_ratio_percent = st.sidebar.selectbox(
@@ -611,23 +611,13 @@ def basic_form_page():
         submit_end = st.form_submit_button("提交问卷并结束", use_container_width=True)
         submit_continue = st.form_submit_button("提交问卷并继续街景比较", use_container_width=True)
 
-    if submit_end or submit_continue:
-        required_items = {
-            "1. 年龄": q1_age,
 
-        }
-
-        missing = [k for k, v in required_items.items() if v is None or v == ""]
 
         if len(q13_lacking_facilities) > 3:
             st.error("第13题最多选择3项。")
             return
 
-        if missing:
-            st.error("以下必答题还没有填写：")
-            for m in missing:
-                st.write(f"- {m}")
-            return
+
 
         respondent_row = {
             "respondent_id": st.session_state.respondent_id,
