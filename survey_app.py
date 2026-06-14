@@ -614,33 +614,7 @@ def basic_form_page():
     if submit_end or submit_continue:
         required_items = {
             "1. 年龄": q1_age,
-            "2. 性别": q2_gender,
-            "3. 健康状况": q3_health,
-            "4. 居住情况": q4_living,
-            "5. 照护需求": q5_care,
-            "6. 独立外出": q6_independent_outing,
-            "7. 辅助工具": q7_assistive_tool,
-            "8. 医疗需求": q8_medical_need,
-            "9. 日间照料": q9_day_care,
-            "9. 助浴": q9_bathing,
-            "9. 助洁": q9_cleaning,
-            "9. 康复护理": q9_rehab_nursing,
-            "9. 助医/陪诊": q9_medical_accompany,
-            "10. 助餐服务": q10_meal_service,
-            "11. 文娱休闲": q11_recreation_facility,
-            "12. 公共交通": q12_public_transit,
-            "14. 公园绿地频率": q14_park_green_freq,
-            "15. 可接受步行时间": q15_acceptable_walk_time,
-            "17. 坡道台阶体感": q17_slope_step_feeling,
-            "18. 休息间隔": q18_rest_interval,
-            "19. 连续上坡": q19_slope_reduce,
-            "19. 台阶多": q19_steps_reduce,
-            "19. 人行道问题": q19_sidewalk_reduce,
-            "19. 车流较多": q19_traffic_reduce,
-            "20. 座椅": q20_seat_increase,
-            "20. 树荫": q20_shade_increase,
-            "20. 扶手": q20_handrail_increase,
-            "20. 热闹商店": q20_lively_shop_increase,
+
         }
 
         missing = [k for k, v in required_items.items() if v is None or v == ""]
