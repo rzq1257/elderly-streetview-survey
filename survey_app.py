@@ -797,11 +797,11 @@ def streetview_page():
 
     with col1:
         st.markdown("#### 左边场景")
-        st.image(scene_a["image_url"], use_container_width=True)
+        st.image(scene_a["image_url"], use_column_width=True)
 
     with col2:
         st.markdown("#### 右边场景")
-        st.image(scene_b["image_url"], use_container_width=True)
+        st.image(scene_b["image_url"], use_column_width=True)
 
     st.markdown("---")
 
