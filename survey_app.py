@@ -178,6 +178,18 @@ def insert_rows(supabase, table_name, rows, chunk_size=500):
         supabase.table(table_name).insert(chunk).execute()
 
 
+def show_large_image(image_url):
+    """
+    兼容不同 Streamlit 版本：
+    新版本使用 use_container_width；
+    老版本如果报错，则回退到 use_column_width。
+    """
+    try:
+        st.image(image_url, use_container_width=True)
+    except TypeError:
+        st.image(image_url, use_column_width=True)
+
+
 # =====================================================
 # Supabase 写入函数
 # =====================================================
@@ -613,7 +625,6 @@ def basic_form_page():
 
     if submit_end or submit_continue:
 
-        # 第13题仍然保留“最多选3项”的规则；如需完全不限，可删除这一小段。
         if len(q13_lacking_facilities) > 3:
             st.error("第13题最多选择3项。")
             return
@@ -701,6 +712,7 @@ def basic_form_page():
             st.session_state.pending_choice_label = None
             st.session_state.step = "streetview"
             st.rerun()
+
 
 # =====================================================
 # 街景比较页面
@@ -793,17 +805,50 @@ def streetview_page():
         st.error("场景信息缺失。")
         return
 
-    col1, col2 = st.columns(2)
+    # =====================================================
+    # 街景图片展示样式：上下排列、图片放大
+    # =====================================================
 
-    with col1:
-        st.markdown("#### 左边场景")
-        st.image(scene_a["image_url"], use_column_width=True)
+    st.markdown(
+        """
+        <style>
+        .streetview-section-title {
+            font-size: 30px;
+            font-weight: 800;
+            color: #0f172a;
+            margin-top: 18px;
+            margin-bottom: 10px;
+        }
 
-    with col2:
-        st.markdown("#### 右边场景")
-        st.image(scene_b["image_url"], use_column_width=True)
+        div[data-testid="stImage"] img {
+            width: 100%;
+            border-radius: 6px;
+        }
+
+        div.stButton > button {
+            min-height: 46px;
+            font-size: 18px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # 原来这里是左右两列 st.columns(2)
+    # 现在改为上下两个图片区域，每张图占满主内容宽度
+
+    st.markdown('<div class="streetview-section-title">左边场景</div>', unsafe_allow_html=True)
+    show_large_image(scene_a["image_url"])
+
+    st.markdown("")
+    st.markdown('<div class="streetview-section-title">右边场景</div>', unsafe_allow_html=True)
+    show_large_image(scene_b["image_url"])
 
     st.markdown("---")
+
+    # =====================================================
+    # 选项按钮
+    # =====================================================
 
     if pair["ask_reason"] == 1 and st.session_state.pending_choice is not None:
         st.info(f"您刚才选择了：{st.session_state.pending_choice_label}")
